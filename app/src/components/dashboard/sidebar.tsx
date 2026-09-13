@@ -11,6 +11,8 @@ import {
   LogOut,
   Download,
   Wand2,
+  FileSearch,
+  ShieldCheck,
 } from "lucide-react";
 import { useDashboard } from "@/lib/dashboard-context";
 import { ReuploadButton } from "@/components/upload/reupload-button";
@@ -21,6 +23,8 @@ const mainNav = [
   { icon: Receipt, label: "Income / Expenses", href: "/income-expenses" },
   { icon: Banknote, label: "Cash Flow", href: "/cash-flow" },
   { icon: TrendingUp, label: "Investment", href: "/investment" },
+  { icon: FileSearch, label: "Transactions", href: "/transactions" },
+  { icon: ShieldCheck, label: "Reports & quality", href: "/reports" },
   { icon: Wand2, label: "Special functions", href: "/special-functions" },
 ];
 
@@ -31,7 +35,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ onNavigate, expanded }: SidebarProps) {
-  const { clearData, uploadedAt, exportFile, backend } = useDashboard();
+  const { clearData, uploadedAt, exportFile, backend, snapshotMode } = useDashboard();
   const pathname = usePathname();
 
   return (
@@ -47,7 +51,7 @@ export function Sidebar({ onNavigate, expanded }: SidebarProps) {
             <p className="mb-2 px-3 text-xs text-muted-foreground/70">Main menu</p>
           )}
           <nav className="flex flex-col gap-0.5">
-            {mainNav.map((item) => {
+            {mainNav.filter((item) => !snapshotMode || item.href !== "/special-functions").map((item) => {
               const isActive =
                 item.href === "/"
                   ? pathname === "/"
@@ -85,6 +89,12 @@ export function Sidebar({ onNavigate, expanded }: SidebarProps) {
 
       {/* Bottom: Export + Reupload (PG only) + Upload new file */}
       <div className={`mt-auto border-t border-border ${expanded ? "p-5" : "p-2"}`}>
+        {snapshotMode && expanded && (
+          <p className="px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+            Verified snapshots · read-only · no exports
+          </p>
+        )}
+        {!snapshotMode && (<>
         <button
           onClick={exportFile}
           title="Export .gnucash file"
@@ -116,6 +126,7 @@ export function Sidebar({ onNavigate, expanded }: SidebarProps) {
             {uploadedAt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
           </p>
         )}
+        </>)}
       </div>
     </aside>
   );

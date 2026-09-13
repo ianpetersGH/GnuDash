@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import Link from "next/link";
 import { useDashboard } from "@/lib/dashboard-context";
 import { useClosing } from "@/lib/closing-context";
 import { type CustomRange, getDataRange } from "@/lib/period-utils";
@@ -125,6 +126,10 @@ export default function DashboardPage() {
       {data.topBalances?.length > 0 && (
         <TopBalances balances={data.topBalances} currency={c} filterType={selectedAssetType} />
       )}
+      <div className="flex flex-wrap gap-3 text-xs">
+        <Link href="/transactions" className="rounded-lg border border-border px-3 py-2 font-medium text-[#3B6B8A]">Drill through charts to transaction splits</Link>
+        <Link href="/reports" className="rounded-lg border border-border px-3 py-2 font-medium text-[#3B6B8A]">Open controls, consolidation bridge, and data quality</Link>
+      </div>
     </div>
   );
 }

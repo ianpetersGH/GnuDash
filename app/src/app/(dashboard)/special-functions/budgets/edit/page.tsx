@@ -171,6 +171,7 @@ export default function BudgetEditorPage() {
   const {
     data,
     isWritable,
+    snapshotMode,
     updateBudget,
     deleteBudget,
     setBudgetAmount,
@@ -371,10 +372,11 @@ export default function BudgetEditorPage() {
         <BreadcrumbBar />
         <Card>
           <CardContent className="p-6 text-sm text-[#6F767E]">
-            Budget editing requires the database to be open in editing mode.
-            Click the
-            <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span>
-            button in the top bar to enable editing.
+            {snapshotMode ? (
+              "Budget editing is disabled in production snapshot mode."
+            ) : (
+              <>Budget editing requires the database to be open in editing mode. Click the <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span> button in the top bar to enable editing.</>
+            )}
           </CardContent>
         </Card>
       </div>

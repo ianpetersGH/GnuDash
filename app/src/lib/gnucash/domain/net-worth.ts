@@ -1,6 +1,6 @@
 import type { MonthlyNetWorth } from "@/lib/types/gnucash";
 import type { ParseContext } from "../context";
-import { sqlMonth } from "../shared/dates";
+import { monthKeyFromGnuCashDate, sqlMonth } from "../shared/dates";
 
 /**
  * Compute monthly net worth time series.
@@ -92,7 +92,7 @@ export function computeNetWorthSeries(ctx: ParseContext): MonthlyNetWorth[] {
 
   const pricesByMonth = new Map<string, Map<string, { price: number; currencyGuid: string }>>();
   for (const p of allPrices) {
-    const pMonth = `${p.date.substring(0, 4)}-${p.date.substring(4, 6)}`;
+    const pMonth = monthKeyFromGnuCashDate(p.date);
     if (!pricesByMonth.has(p.commodity_guid)) pricesByMonth.set(p.commodity_guid, new Map());
     pricesByMonth.get(p.commodity_guid)!.set(pMonth, { price: p.price, currencyGuid: p.currency_guid });
   }

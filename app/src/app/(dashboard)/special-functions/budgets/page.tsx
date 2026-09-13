@@ -49,7 +49,7 @@ function BreadcrumbBar() {
 }
 
 export default function BudgetsListPage() {
-  const { data, isWritable, deleteBudget } = useDashboard();
+  const { data, isWritable, snapshotMode, deleteBudget } = useDashboard();
   const [deletingGuid, setDeletingGuid] = useState<string | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,10 +78,11 @@ export default function BudgetsListPage() {
           <div>
             <h1 className="text-2xl font-semibold text-[#1A1D1F]">Budgets</h1>
             <p className="mt-1 text-sm text-[#6F767E]">
-              Budget editing requires the database to be open in editing mode.
-              Click the
-              <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span>
-              button in the top bar to enable editing.
+              {snapshotMode ? (
+                <>Budget mutation is disabled in production snapshot mode. <Link className="font-medium text-[#3B6B8A]" href="/cash-flow">Open the read-only budget and cash-flow report.</Link></>
+              ) : (
+                <>Budget editing requires the database to be open in editing mode. Click the <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span> button in the top bar to enable editing.</>
+              )}
             </p>
           </div>
         </header>

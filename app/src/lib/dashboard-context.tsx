@@ -18,6 +18,14 @@ import {
   saveServerConfig,
   type ServerConfig,
 } from "@/lib/storage/server-config";
+import {
+  buildConsolidatedData,
+  parseSnapshotManifest,
+  verifySnapshotBytes,
+  type BookScope,
+  type ConsolidationBridge,
+  type SnapshotManifest,
+} from "@/lib/snapshot-manifest";
 
 const STORAGE_KEY = "gnucash-dashboard-data";
 // Bumped to v15 when the Postgres backend landed (#48) — the new `backend`
@@ -27,8 +35,12 @@ const VERSION_KEY = "gnucash-dashboard-version";
 const UPLOADED_AT_KEY = "gnucash-dashboard-uploaded-at";
 const WRITABLE_KEY = "gnucash-dashboard-writable";
 const BACKEND_KEY = "gnucash-dashboard-backend";
+const PRODUCTION_SNAPSHOT_MODE =
+  process.env.NEXT_PUBLIC_PRODUCTION_SNAPSHOT_MODE === "true";
+const SNAPSHOT_MANIFEST_URL =
+  process.env.NEXT_PUBLIC_SNAPSHOT_MANIFEST_URL ?? "/snapshots/manifest.json";
 
-export type Backend = "local" | "postgres";
+export type Backend = "local" | "postgres" | "snapshot";
 
 interface DashboardContextType {
   data: DashboardData | null;
@@ -47,6 +59,13 @@ interface DashboardContextType {
    * AND the UI should show the amber "existing database — read only" banner.
    */
   postgresSchemaOverride: string | null;
+  snapshotMode: boolean;
+  snapshotManifest: SnapshotManifest | null;
+  bookScope: BookScope;
+  dataByBook: Record<"personal" | "business", DashboardData> | null;
+  consolidationBridge: ConsolidationBridge | null;
+  setBookScope: (scope: BookScope) => void;
+  refreshSnapshots: () => Promise<void>;
   toggleWritable: () => Promise<void>;
   uploadFile: (file: File, writable?: boolean) => Promise<void>;
   /**
@@ -151,6 +170,13 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [postgresSchemaOverride, setPostgresSchemaOverride] = useState<
     string | null
   >(null);
+  const [snapshotManifest, setSnapshotManifest] = useState<SnapshotManifest | null>(null);
+  const [bookScope, setBookScopeState] = useState<BookScope>("personal");
+  const [dataByBook, setDataByBook] = useState<Record<"personal" | "business", DashboardData> | null>(null);
+  const [consolidatedData, setConsolidatedData] = useState<DashboardData | null>(null);
+  const [consolidationBridge, setConsolidationBridge] = useState<ConsolidationBridge | null>(null);
+  const bookScopeRef = useRef<BookScope>("personal");
+  const snapshotClientsRef = useRef<Partial<Record<"personal" | "business", GnuCashWorkerClient>>>({});
   const clientRef = useRef<GnuCashWorkerClient | null>(null);
   // Connection used by the currently-open Postgres book. Held in a ref, not
   // state, so reuploadPostgresBook can see the freshly-set value synchronously
@@ -164,13 +190,71 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     return clientRef.current;
   }
 
-  // On mount: try OPFS first, then fall back to sessionStorage.
+  function setBookScope(scope: BookScope) {
+    bookScopeRef.current = scope;
+    setBookScopeState(scope);
+    if (scope === "all") setData(consolidatedData);
+    else if (dataByBook) setData(dataByBook[scope]);
+  }
+
+  async function refreshSnapshots(): Promise<void> {
+    if (!PRODUCTION_SNAPSHOT_MODE) return;
+    setIsLoading(true);
+    setError(null);
+    const nextClients: Partial<Record<"personal" | "business", GnuCashWorkerClient>> = {};
+    try {
+      const response = await fetch(SNAPSHOT_MANIFEST_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Snapshot manifest request failed: HTTP ${response.status}`);
+      const manifest = parseSnapshotManifest(await response.json());
+      const entries = await Promise.all(manifest.books.map(async (book) => {
+        const snapshotResponse = await fetch(book.url, { cache: "no-store" });
+        if (!snapshotResponse.ok) throw new Error(`${book.id} snapshot request failed: HTTP ${snapshotResponse.status}`);
+        const bytes = await snapshotResponse.arrayBuffer();
+        await verifySnapshotBytes(book, bytes);
+        const client = new GnuCashWorkerClient();
+        nextClients[book.id] = client;
+        await client.waitForReady();
+        await client.openSnapshot(bytes);
+        return [book.id, await client.getFullDashboardData()] as const;
+      }));
+      const books = Object.fromEntries(entries) as Record<"personal" | "business", DashboardData>;
+      const consolidated = buildConsolidatedData(books.personal, books.business, manifest);
+      for (const oldClient of Object.values(snapshotClientsRef.current)) oldClient?.close();
+      snapshotClientsRef.current = nextClients;
+      setSnapshotManifest(manifest);
+      setDataByBook(books);
+      setConsolidatedData(consolidated.data);
+      setConsolidationBridge(consolidated.bridge);
+      setData(bookScopeRef.current === "all" ? consolidated.data : books[bookScopeRef.current]);
+      setUploadedAt(new Date(manifest.generated_at));
+      setIsWritable(false);
+      setIsXmlSource(false);
+      setBackend("snapshot");
+      setPostgresBookId(null);
+      setPostgresSchemaOverride(null);
+    } catch (err) {
+      for (const nextClient of Object.values(nextClients)) nextClient?.close();
+      setError(err instanceof Error ? err.message : "Snapshot refresh failed");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  // On mount: production deployments auto-load verified snapshots; other
   //
   // The Postgres backend's auto-reconnect path lives in a follow-up PR; for
   // now if the previous session was on Postgres we simply fall through to
   // the upload screen (the Server tab's defaultValue is wired to the saved
   // preference so the user lands back there).
   useEffect(() => {
+    if (PRODUCTION_SNAPSHOT_MODE) {
+      void refreshSnapshots();
+      const timer = window.setInterval(() => void refreshSnapshots(), 60_000);
+      return () => {
+        window.clearInterval(timer);
+        for (const client of Object.values(snapshotClientsRef.current)) client?.close();
+      };
+    }
     let cancelled = false;
 
     async function restore() {
@@ -261,6 +345,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   // Persist to sessionStorage when data changes (fast restore cache)
   useEffect(() => {
+    if (PRODUCTION_SNAPSHOT_MODE) return;
     if (data) {
       try {
         sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -272,6 +357,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, [data]);
 
   async function toggleWritable() {
+    if (PRODUCTION_SNAPSHOT_MODE) return;
     // Interop mode points at a schema gnudash doesn't own — flipping writable
     // would re-open the local OPFS cache read-write and expose every edit
     // affordance (top badge + per-row edit/delete), yet writes would never
@@ -294,6 +380,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function uploadFile(file: File, writable: boolean = false) {
+    if (PRODUCTION_SNAPSHOT_MODE) throw new Error("Manual uploads are disabled in production snapshot mode");
     setIsLoading(true);
     setError(null);
 
@@ -656,7 +743,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function createTransaction(payload: CreateTransactionPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
 
     const client = getClient();
     const dashboardData = await client.createTransaction(payload);
@@ -664,7 +751,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function deleteTransactionFn(payload: DeleteTransactionPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
 
     const client = getClient();
     const dashboardData = await client.deleteTransaction(payload);
@@ -672,7 +759,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function editTransaction(payload: EditTransactionPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
 
     const client = getClient();
     const dashboardData = await client.editTransaction(payload);
@@ -680,7 +767,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function bulkEditTransactionsFn(payload: BulkEditTransactionsPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
 
     const client = getClient();
     const dashboardData = await client.bulkEditTransactions(payload);
@@ -688,43 +775,43 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function createAccountFn(payload: CreateAccountPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.createAccount(payload));
   }
 
   async function updateAccountFn(payload: UpdateAccountPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.updateAccount(payload));
   }
 
   async function deleteAccountWithReallocationFn(payload: DeleteAccountPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.deleteAccount(payload));
   }
 
   async function createCommodityFn(payload: CreateCommodityPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.createCommodity(payload));
   }
 
   async function addPriceFn(payload: AddPricePayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.addPrice(payload));
   }
 
   async function editPriceFn(payload: EditPricePayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.editPrice(payload));
   }
 
   async function deletePriceFn(payload: DeletePricePayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.deletePrice(payload));
   }
@@ -735,7 +822,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
    * client) or persisted to OPFS (local backend).
    */
   async function createBudgetFn(payload: CreateBudgetPayload): Promise<string> {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     const { budgetGuid, ...dashboardData } = await client.createBudget(payload);
     setData(dashboardData);
@@ -743,25 +830,25 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }
 
   async function updateBudgetFn(payload: UpdateBudgetPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.updateBudget(payload));
   }
 
   async function deleteBudgetFn(payload: DeleteBudgetPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.deleteBudget(payload));
   }
 
   async function setBudgetAmountFn(payload: SetBudgetAmountPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.setBudgetAmount(payload));
   }
 
   async function clearBudgetAmountFn(payload: ClearBudgetAmountPayload) {
-    if (!isWritable) throw new Error("Database is not open in read-write mode");
+    if (PRODUCTION_SNAPSHOT_MODE || !isWritable) throw new Error("Database is not open in read-write mode");
     const client = getClient();
     setData(await client.clearBudgetAmount(payload));
   }
@@ -786,7 +873,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   return (
     <DashboardContext.Provider
-      value={{ data, isLoading, error, uploadedAt, isWritable, isXmlSource, backend, postgresBookId, postgresSchemaOverride, toggleWritable, uploadFile, openPostgresBook, importFileToPostgres, reuploadPostgresBook, openExistingGnuCashBook, createFreshLocalBook, createFreshPostgresBook, loadDemo, clearData, createTransaction, deleteTransaction: deleteTransactionFn, editTransaction, bulkEditTransactions: bulkEditTransactionsFn, createAccount: createAccountFn, updateAccount: updateAccountFn, deleteAccountWithReallocation: deleteAccountWithReallocationFn, createCommodity: createCommodityFn, addPrice: addPriceFn, editPrice: editPriceFn, deletePrice: deletePriceFn, createBudget: createBudgetFn, updateBudget: updateBudgetFn, deleteBudget: deleteBudgetFn, setBudgetAmount: setBudgetAmountFn, clearBudgetAmount: clearBudgetAmountFn, exportFile, setCurrency: setCurrencyFn }}
+      value={{ data, isLoading, error, uploadedAt, isWritable, isXmlSource, backend, postgresBookId, postgresSchemaOverride, snapshotMode: PRODUCTION_SNAPSHOT_MODE, snapshotManifest, bookScope, dataByBook, consolidationBridge, setBookScope, refreshSnapshots, toggleWritable, uploadFile, openPostgresBook, importFileToPostgres, reuploadPostgresBook, openExistingGnuCashBook, createFreshLocalBook, createFreshPostgresBook, loadDemo, clearData, createTransaction, deleteTransaction: deleteTransactionFn, editTransaction, bulkEditTransactions: bulkEditTransactionsFn, createAccount: createAccountFn, updateAccount: updateAccountFn, deleteAccountWithReallocation: deleteAccountWithReallocationFn, createCommodity: createCommodityFn, addPrice: addPriceFn, editPrice: editPriceFn, deletePrice: deletePriceFn, createBudget: createBudgetFn, updateBudget: updateBudgetFn, deleteBudget: deleteBudgetFn, setBudgetAmount: setBudgetAmountFn, clearBudgetAmount: clearBudgetAmountFn, exportFile, setCurrency: setCurrencyFn }}
     >
       {children}
     </DashboardContext.Provider>

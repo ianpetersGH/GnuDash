@@ -29,14 +29,19 @@ export function ValueOverTimeChart({ series, currency, selectedTicker }: ValueOv
       : series;
 
     // Aggregate by month: sum value and costBasis across all tickers
-    const monthly = new Map<string, { value: number; costBasis: number }>();
+    const monthly = new Map<string, { value: number; costBasis: number; hasPricedValue: boolean }>();
     for (const row of filtered) {
       const existing = monthly.get(row.month);
       if (existing) {
         existing.value += row.value;
         existing.costBasis += row.costBasis;
+        existing.hasPricedValue = existing.hasPricedValue || !row.valuationOnly;
       } else {
-        monthly.set(row.month, { value: row.value, costBasis: row.costBasis });
+        monthly.set(row.month, {
+          value: row.value,
+          costBasis: row.costBasis,
+          hasPricedValue: !row.valuationOnly,
+        });
       }
     }
 
@@ -50,9 +55,12 @@ export function ValueOverTimeChart({ series, currency, selectedTicker }: ValueOv
           label: d.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
           value: data.value,
           costBasis: data.costBasis,
+          hasPricedValue: data.hasPricedValue,
         };
       });
   }, [series, selectedTicker]);
+
+  const hasKnownCostBasis = chartData.some((row) => row.hasPricedValue);
 
   const maxValue = useMemo(
     () => Math.max(...chartData.map((d) => Math.max(d.value, d.costBasis)), 0),
@@ -100,7 +108,11 @@ export function ValueOverTimeChart({ series, currency, selectedTicker }: ValueOv
                 <Tooltip
                   formatter={(value, name) => [
                     formatCurrency(Number(value), currency),
-                    name === "value" ? "Market Value" : "Cost Basis",
+                    name === "value"
+                      ? hasKnownCostBasis
+                        ? "Market Value"
+                        : "Recorded Value"
+                      : "Known Cost Basis",
                   ]}
                   labelFormatter={(label) => String(label)}
                   contentStyle={{
@@ -115,7 +127,11 @@ export function ValueOverTimeChart({ series, currency, selectedTicker }: ValueOv
                 <Legend
                   formatter={(value) => (
                     <span className="text-xs text-[#6F767E]">
-                      {value === "value" ? "Market Value" : "Cost Basis"}
+                      {value === "value"
+                        ? hasKnownCostBasis
+                          ? "Market Value"
+                          : "Recorded Value"
+                        : "Known Cost Basis"}
                     </span>
                   )}
                 />
@@ -127,15 +143,17 @@ export function ValueOverTimeChart({ series, currency, selectedTicker }: ValueOv
                   dot={false}
                   name="value"
                 />
-                <Line
-                  type="monotone"
-                  dataKey="costBasis"
-                  stroke="var(--chart-axis-tick)"
-                  strokeWidth={1.5}
-                  strokeDasharray="6 4"
-                  dot={false}
-                  name="costBasis"
-                />
+                {hasKnownCostBasis && (
+                  <Line
+                    type="monotone"
+                    dataKey="costBasis"
+                    stroke="var(--chart-axis-tick)"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    dot={false}
+                    name="costBasis"
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
