@@ -193,6 +193,27 @@ export class GnuCashWorkerClient {
     });
   }
 
+  /** Open verified SQLite snapshot bytes without persisting them to OPFS. */
+  async openSnapshot(buffer: ArrayBuffer): Promise<void> {
+    await this.wasmReady;
+    return new Promise<void>((resolve, reject) => {
+      const prevHandler = this.worker.onmessage;
+      this.worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+        const msg = e.data;
+        if (msg.type === "ready") {
+          this.worker.onmessage = prevHandler;
+          resolve();
+        } else if (msg.type === "init-error") {
+          this.worker.onmessage = prevHandler;
+          reject(new Error(msg.message));
+        } else {
+          this.handleMessage(msg);
+        }
+      };
+      this.send({ type: "init-memory-readonly", fileBuffer: buffer }, [buffer]);
+    });
+  }
+
   /**
    * Open a book from a Postgres dump payload. The caller (typically the
    * upload flow's server-connect panel) has already fetched the gzipped dump

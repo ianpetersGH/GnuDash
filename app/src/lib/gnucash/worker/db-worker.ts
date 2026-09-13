@@ -85,6 +85,8 @@ let writableAdapter: WritableDbAdapter | null = null;
 let syncClient: PostgresSyncClient | null = null;
 
 const OPFS_DB_NAME = "/gnucash-dashboard.db";
+const PRODUCTION_SNAPSHOT_MODE =
+  process.env.NEXT_PUBLIC_PRODUCTION_SNAPSHOT_MODE === "true";
 
 /**
  * DDL for ancillary engine tables (`lots`) that older .gnucash files may be
@@ -164,6 +166,28 @@ async function initFromBuffer(buffer: ArrayBuffer, writable: boolean): Promise<v
     validateSchema(adapter);
     ctx = buildParseContext(adapter);
   }
+}
+
+/** Open snapshot bytes in memory with a read-only adapter and no OPFS copy. */
+function initFromReadOnlyBuffer(buffer: ArrayBuffer): void {
+  closeDb();
+  isWritable = false;
+  writableAdapter = null;
+  const bytes = new Uint8Array(buffer);
+  const p = sqlite3.wasm.allocFromTypedArray(bytes);
+  db = new sqlite3.oo1.DB();
+  const rc = sqlite3.capi.sqlite3_deserialize(
+    db.pointer!,
+    "main",
+    p,
+    bytes.byteLength,
+    bytes.byteLength,
+    sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE,
+  );
+  if (rc !== 0) throw new Error(`sqlite3_deserialize failed with code ${rc}`);
+  const adapter = createWasmAdapter(db);
+  validateSchema(adapter);
+  ctx = buildParseContext(adapter);
 }
 
 /**
@@ -1053,6 +1077,17 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       break;
     }
 
+    case "init-memory-readonly": {
+      try {
+        initFromReadOnlyBuffer(msg.fileBuffer);
+        console.log("[db-worker] verified snapshot opened in memory (read-only)");
+        post({ type: "ready" });
+      } catch (err) {
+        post({ type: "init-error", message: (err as Error).message });
+      }
+      break;
+    }
+
     case "init-xml": {
       try {
         initFromXmlData(msg.xmlData);
@@ -1132,6 +1167,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 
     case "mutation": {
       try {
+        if (PRODUCTION_SNAPSHOT_MODE) {
+          throw new Error("Mutations are disabled in production snapshot mode");
+        }
         if (!ctx) throw new Error("No database loaded");
         let data: unknown;
         switch (msg.action) {

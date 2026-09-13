@@ -11,6 +11,7 @@ import {
   Lock,
   Menu,
   Pencil,
+  RefreshCw,
 } from "lucide-react";
 import { useDashboard } from "@/lib/dashboard-context";
 import { PrivacyProvider, usePrivacy } from "@/lib/privacy-context";
@@ -74,6 +75,13 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
     isXmlSource,
     toggleWritable,
     postgresSchemaOverride,
+    snapshotMode,
+    snapshotManifest,
+    bookScope,
+    setBookScope,
+    refreshSnapshots,
+    isLoading,
+    error,
   } = useDashboard();
   const { hideValues, toggleHideValues } = usePrivacy();
   const { excludeClosing, toggleExcludeClosing } = useClosing();
@@ -81,6 +89,20 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
   const [sidebarHovered, setSidebarHovered] = useState(false);
 
   if (!data) {
+    if (snapshotMode) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-muted p-6">
+          <div className="max-w-lg rounded-xl border border-border bg-card p-6 text-center shadow-sm">
+            <Lock className="mx-auto mb-3 h-7 w-7 text-[#6C9B8B]" />
+            <h1 className="text-lg font-semibold">Loading verified financial snapshots</h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {isLoading ? "Validating the manifest, digests, SQLite engines, and reports…" : error ?? "Waiting for the localhost snapshot manifest."}
+            </p>
+            {!isLoading && <button onClick={() => void refreshSnapshots()} className="mt-4 rounded-lg border border-border px-3 py-2 text-sm">Retry</button>}
+          </div>
+        </div>
+      );
+    }
     return <FileUpload />;
   }
 
@@ -128,6 +150,15 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
             />
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
+            {snapshotMode && (
+              <div className="flex items-center rounded-lg border border-border bg-muted p-0.5" aria-label="Reporting workspace">
+                {(["personal", "business", "all"] as const).map((scope) => (
+                  <button key={scope} onClick={() => setBookScope(scope)} className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize ${bookScope === scope ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"}`}>
+                    {scope === "business" ? "LLC" : scope}
+                  </button>
+                ))}
+              </div>
+            )}
             {isXmlSource && data && (
               <span
                 className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground"
@@ -146,7 +177,7 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
                 <span className="hidden sm:inline">Read-only</span>
               </span>
             )}
-            {postgresSchemaOverride === null && !isXmlSource && isWritable && (
+            {!snapshotMode && postgresSchemaOverride === null && !isXmlSource && isWritable && (
               <button
                 onClick={toggleWritable}
                 className="flex items-center gap-1.5 rounded-lg border border-[#3B6B8A] bg-[#3B6B8A]/10 px-3 py-1.5 text-xs font-medium text-[#3B6B8A] transition-colors hover:bg-[#3B6B8A]/20 dark:border-[#6FA4C7] dark:text-[#6FA4C7] dark:bg-[#6FA4C7]/10 dark:hover:bg-[#6FA4C7]/20"
@@ -156,7 +187,7 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
                 <span className="hidden sm:inline">Editing</span>
               </button>
             )}
-            {postgresSchemaOverride === null && !isXmlSource && !isWritable && data && (
+            {!snapshotMode && postgresSchemaOverride === null && !isXmlSource && !isWritable && data && (
               <button
                 onClick={toggleWritable}
                 className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -180,7 +211,12 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
                 <span className="hidden sm:inline">{excludeClosing ? "Closing excluded" : "Exclude closing"}</span>
               </button>
             )}
-            <CurrencySelector />
+            {!snapshotMode && <CurrencySelector />}
+            {snapshotMode && (
+              <button onClick={() => void refreshSnapshots()} disabled={isLoading} className="rounded-lg border border-border p-1.5 text-muted-foreground hover:bg-muted disabled:opacity-50" title="Refresh verified snapshots">
+                <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              </button>
+            )}
             <button
               onClick={toggleHideValues}
               className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -211,6 +247,23 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
               in read-only mode. Close GnuCash desktop before editing on either
               side to avoid data conflicts.
             </span>
+          </div>
+        )}
+
+        {snapshotMode && (
+          <div className="flex items-center gap-2 border-b border-emerald-300 bg-emerald-50 px-4 py-2 text-xs text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200 sm:px-8">
+            <Lock className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Production snapshot mode · canonical books are not mounted · mutation and export paths are disabled · workspace: <strong>{bookScope === "business" ? "LLC" : bookScope}</strong>
+              {snapshotManifest ? ` · refreshed ${new Date(snapshotManifest.generated_at).toLocaleString()}` : ""}
+            </span>
+          </div>
+        )}
+
+        {snapshotMode && error && (
+          <div className="flex items-center gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200 sm:px-8" role="alert">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Snapshot refresh failed; the last verified reports remain loaded. {error}
           </div>
         )}
 

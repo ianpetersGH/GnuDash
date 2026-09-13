@@ -26,6 +26,7 @@ export interface PostgresDumpPayload {
 
 export type WorkerRequest =
   | { type: "init"; fileBuffer: ArrayBuffer; writable?: boolean }
+  | { type: "init-memory-readonly"; fileBuffer: ArrayBuffer }
   | { type: "init-xml"; xmlData: GnuCashXmlData }
   | { type: "init-opfs"; fileName: string; writable?: boolean }
   | {

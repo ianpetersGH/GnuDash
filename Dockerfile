@@ -7,6 +7,8 @@ COPY app/ ./
 # has no Node runtime. The default build target (standalone) is used by the
 # Postgres-backend deployment path instead — see docs/deployment.md.
 ENV NEXT_OUTPUT=export
+ENV NEXT_PUBLIC_PRODUCTION_SNAPSHOT_MODE=true
+ENV NEXT_PUBLIC_SNAPSHOT_MANIFEST_URL=/snapshots/manifest.json
 RUN npm run build
 
 FROM nginx:alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a
