@@ -8,6 +8,14 @@ export function parseGnuCashDate(dateStr: string): Date {
   return new Date(year, month, day);
 }
 
+/** Build YYYY-MM from either compact or ISO GnuCash date storage. */
+export function monthKeyFromGnuCashDate(dateStr: string): string {
+  if (!dateStr) return "";
+  const digits = dateStr.replace(/\D/g, "");
+  if (digits.length < 6) return "";
+  return `${digits.substring(0, 4)}-${digits.substring(4, 6)}`;
+}
+
 /** Format a Date as YYYYMMDDHHmmss for GnuCash DB storage. */
 export function formatGnuCashDate(date: Date): string {
   const y = date.getFullYear();
@@ -27,17 +35,17 @@ export function formatISODate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-/** Extract YYYY-MM from a compact YYYYMMDDHHmmss column in SQL. */
+/** Extract YYYY-MM from compact or ISO GnuCash date storage in SQL. */
 export function sqlMonth(col: string): string {
-  return `substr(${col}, 1, 4) || '-' || substr(${col}, 5, 2)`;
+  return `CASE WHEN substr(${col}, 5, 1) = '-' THEN substr(${col}, 1, 7) ELSE substr(${col}, 1, 4) || '-' || substr(${col}, 5, 2) END`;
 }
 
-/** Extract YYYY from a compact YYYYMMDDHHmmss column in SQL. */
+/** Extract YYYY from compact or ISO GnuCash date storage in SQL. */
 export function sqlYear(col: string): string {
   return `substr(${col}, 1, 4)`;
 }
 
-/** Extract zero-padded month number (01–12) from a compact YYYYMMDDHHmmss column in SQL. */
+/** Extract zero-padded month number from compact or ISO GnuCash dates. */
 export function sqlMonthNum(col: string): string {
-  return `substr(${col}, 5, 2)`;
+  return `CASE WHEN substr(${col}, 5, 1) = '-' THEN substr(${col}, 6, 2) ELSE substr(${col}, 5, 2) END`;
 }
