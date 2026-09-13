@@ -83,15 +83,19 @@ export function buildParseContext(db: DbAdapter, overrideBaseCurrencyGuid?: stri
     const overrideCommodity = commodityMap.get(overrideBaseCurrencyGuid);
     baseCurrencyMnemonic = overrideCommodity?.mnemonic ?? "USD";
   } else {
-    baseCurrencyGuid = rootAccount.commodity_guid;
-    const baseCommodity = commodityMap.get(baseCurrencyGuid);
+    const rootCommodityGuid = rootAccount.commodity_guid as string | null;
+    baseCurrencyGuid = rootCommodityGuid ?? "";
+    const baseCommodity = rootCommodityGuid
+      ? commodityMap.get(rootCommodityGuid)
+      : undefined;
     baseCurrencyMnemonic = baseCommodity?.mnemonic ?? "USD";
 
-    // Fallback currency detection if root doesn't have a CURRENCY commodity
-    if (baseCommodity && baseCommodity.namespace !== "CURRENCY") {
+    // Real GnuCash root accounts commonly have no commodity. Fall back to the
+    // most-used BANK/CASH currency and set both its GUID and mnemonic.
+    if (!baseCommodity || baseCommodity.namespace !== "CURRENCY") {
       const row = db
         .prepare(
-          `SELECT c.mnemonic
+          `SELECT c.guid, c.mnemonic
            FROM accounts a
            JOIN commodities c ON a.commodity_guid = c.guid
            WHERE a.account_type IN ('BANK', 'CASH') AND c.namespace = 'CURRENCY'
@@ -99,8 +103,11 @@ export function buildParseContext(db: DbAdapter, overrideBaseCurrencyGuid?: stri
            ORDER BY COUNT(*) DESC
            LIMIT 1`
         )
-        .get() as { mnemonic: string } | undefined;
-      if (row) baseCurrencyMnemonic = row.mnemonic;
+        .get() as { guid: string; mnemonic: string } | undefined;
+      if (row) {
+        baseCurrencyGuid = row.guid;
+        baseCurrencyMnemonic = row.mnemonic;
+      }
     }
   }
 
