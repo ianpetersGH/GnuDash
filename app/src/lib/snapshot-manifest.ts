@@ -195,8 +195,72 @@ function prefixBreakdown(rows: ExpenseCategory[], prefix: string): ExpenseCatego
   return rows.map((row) => ({ ...row, name: `[${prefix}] ${row.name}`, fullPath: `${prefix}:${row.fullPath}`, children: row.children ? prefixBreakdown(row.children, prefix) : undefined }));
 }
 
-function joinCategories(rows: MonthlyExpenseByCategory[][]): MonthlyExpenseByCategory[] {
-  return rows.flat();
+function prefixCategories(rows: MonthlyExpenseByCategory[], prefix: string, label: string): MonthlyExpenseByCategory[] {
+  return rows.map((row) => ({
+    ...row,
+    category: `[${label}] ${row.category}`,
+    fullPath: `${prefix}:${row.fullPath}`,
+    pathParts: [label, ...row.pathParts],
+  }));
+}
+
+function prefixCategoryColors(colors: Record<string, string>, label: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(colors).map(([key, value]) => [`[${label}] ${key}`, value]));
+}
+
+function prefixExpenseTransactions<T extends { accountName: string; fullPath: string; pathParts: string[] }>(
+  rows: T[], prefix: string, label: string,
+): T[] {
+  return rows.map((row) => ({
+    ...row,
+    accountName: `[${label}] ${row.accountName}`,
+    fullPath: `${prefix}:${row.fullPath}`,
+    pathParts: [label, ...row.pathParts],
+  }));
+}
+
+function applyCashFlowAdjustments(rows: MonthlyCashFlow[], eliminations: ConsolidationElimination[]): MonthlyCashFlow[] {
+  return rows.map((row) => {
+    const income = eliminations.filter((item) => item.metric === "income" && item.effective_month === row.month).reduce((sum, item) => sum + item.amount, 0);
+    const expenses = eliminations.filter((item) => item.metric === "expenses" && item.effective_month === row.month).reduce((sum, item) => sum + item.amount, 0);
+    return { ...row, income: row.income + income, expenses: row.expenses + expenses, net: row.net + income - expenses };
+  });
+}
+
+function eliminationCategoryRows(eliminations: ConsolidationElimination[], metric: "income" | "expenses"): MonthlyExpenseByCategory[] {
+  return eliminations.filter((item) => item.metric === metric).map((item) => ({
+    month: item.effective_month,
+    category: "[Consolidation] Verified adjustments",
+    fullPath: `consolidation:verified-${metric}-adjustments`,
+    pathParts: ["Consolidation", "Verified adjustments"],
+    amount: item.amount,
+  }));
+}
+
+function carryForwardInvestmentSeries(
+  rows: DashboardData["investmentValueSeries"], allMonths: string[],
+): DashboardData["investmentValueSeries"] {
+  const byTicker = new Map<string, Map<string, DashboardData["investmentValueSeries"][number]>>();
+  for (const row of rows) {
+    const monthly = byTicker.get(row.ticker) ?? new Map();
+    const existing = monthly.get(row.month);
+    monthly.set(row.month, existing ? {
+      ...row,
+      value: existing.value + row.value,
+      costBasis: existing.costBasis + row.costBasis,
+      valuationOnly: Boolean(existing.valuationOnly && row.valuationOnly),
+    } : row);
+    byTicker.set(row.ticker, monthly);
+  }
+  const result: DashboardData["investmentValueSeries"] = [];
+  for (const monthly of byTicker.values()) {
+    let latest: DashboardData["investmentValueSeries"][number] | undefined;
+    for (const month of allMonths) {
+      latest = monthly.get(month) ?? latest;
+      if (latest) result.push({ ...latest, month });
+    }
+  }
+  return result;
 }
 
 export function buildConsolidatedData(
@@ -213,11 +277,30 @@ export function buildConsolidatedData(
   if (manifest.consolidation.eliminations.length === 0) qualificationNotes.push("No cross-book elimination evidence was supplied; no owner entries were eliminated.");
   if (unresolvedEliminations.length) qualificationNotes.push("Pending, unknown, or currency-mismatched eliminations were not applied.");
   const publication: ConsolidationBridge["publication"] = qualificationNotes.length || unresolvedEliminations.length ? "qualified" : "verified";
-  const cashFlowSeries = sumMonthlyCashFlow([personal.cashFlowSeries, business.cashFlowSeries]).map((row) => {
-    const monthIncome = verifiedEliminations.filter((item) => item.metric === "income" && item.effective_month === row.month).reduce((sum, item) => sum + item.amount, 0);
-    const monthExpenses = verifiedEliminations.filter((item) => item.metric === "expenses" && item.effective_month === row.month).reduce((sum, item) => sum + item.amount, 0);
-    return { ...row, income: row.income + monthIncome, expenses: row.expenses + monthExpenses, net: row.net + monthIncome - monthExpenses };
-  });
+  const cashFlowSeries = applyCashFlowAdjustments(
+    sumMonthlyCashFlow([personal.cashFlowSeries, business.cashFlowSeries]),
+    verifiedEliminations,
+  );
+  const hasClosingTransactions = personal.hasClosingTransactions || business.hasClosingTransactions;
+  const cashFlowSeriesExcludingClosing = hasClosingTransactions
+    ? applyCashFlowAdjustments(sumMonthlyCashFlow([
+      personal.cashFlowSeriesExcludingClosing ?? personal.cashFlowSeries,
+      business.cashFlowSeriesExcludingClosing ?? business.cashFlowSeries,
+    ]), verifiedEliminations)
+    : undefined;
+  const categoryRows = (key: "monthlyExpensesByCategory" | "monthlyIncomeByCategory" | "monthlyCashInflowByCategory" | "monthlyCashOutflowByCategory") => [
+    ...prefixCategories(personal[key], "personal", "Personal"),
+    ...prefixCategories(business[key], "business", "LLC"),
+  ];
+  const closingCategoryRows = (key: "monthlyExpensesByCategoryExcludingClosing" | "monthlyIncomeByCategoryExcludingClosing" | "monthlyCashInflowByCategoryExcludingClosing" | "monthlyCashOutflowByCategoryExcludingClosing", fallback: "monthlyExpensesByCategory" | "monthlyIncomeByCategory" | "monthlyCashInflowByCategory" | "monthlyCashOutflowByCategory") => [
+    ...prefixCategories(personal[key] ?? personal[fallback], "personal", "Personal"),
+    ...prefixCategories(business[key] ?? business[fallback], "business", "LLC"),
+  ];
+  const investmentMonths = [...new Set([...personal.investmentValueSeries, ...business.investmentValueSeries].map((row) => row.month))].sort();
+  const consolidatedInvestmentSeries = [
+    ...carryForwardInvestmentSeries(personal.investmentValueSeries, investmentMonths),
+    ...carryForwardInvestmentSeries(business.investmentValueSeries, investmentMonths),
+  ];
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentIncomeAdjustment = verifiedEliminations.filter((item) => item.metric === "income" && item.effective_month === currentMonth).reduce((sum, item) => sum + item.amount, 0);
   const currentExpenseAdjustment = verifiedEliminations.filter((item) => item.metric === "expenses" && item.effective_month === currentMonth).reduce((sum, item) => sum + item.amount, 0);
@@ -227,12 +310,14 @@ export function buildConsolidatedData(
     netWorthSeries: sumMonthlyNetWorth([personal.netWorthSeries, business.netWorthSeries], verifiedEliminations),
     cashFlowSeries,
     expenseBreakdown: [...prefixBreakdown(personal.expenseBreakdown, "Personal"), ...prefixBreakdown(business.expenseBreakdown, "LLC")],
-    monthlyExpensesByCategory: joinCategories([personal.monthlyExpensesByCategory, business.monthlyExpensesByCategory]),
-    expenseTransactions: [...personal.expenseTransactions, ...business.expenseTransactions],
-    monthlyIncomeByCategory: joinCategories([personal.monthlyIncomeByCategory, business.monthlyIncomeByCategory]),
-    incomeTransactions: [...personal.incomeTransactions, ...business.incomeTransactions],
+    monthlyExpensesByCategory: [...categoryRows("monthlyExpensesByCategory"), ...eliminationCategoryRows(verifiedEliminations, "expenses")],
+    expenseCategoryColors: { ...prefixCategoryColors(personal.expenseCategoryColors, "Personal"), ...prefixCategoryColors(business.expenseCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" },
+    expenseTransactions: [...prefixExpenseTransactions(personal.expenseTransactions, "personal", "Personal"), ...prefixExpenseTransactions(business.expenseTransactions, "business", "LLC")],
+    monthlyIncomeByCategory: [...categoryRows("monthlyIncomeByCategory"), ...eliminationCategoryRows(verifiedEliminations, "income")],
+    incomeCategoryColors: { ...prefixCategoryColors(personal.incomeCategoryColors, "Personal"), ...prefixCategoryColors(business.incomeCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" },
+    incomeTransactions: [...prefixExpenseTransactions(personal.incomeTransactions, "personal", "Personal"), ...prefixExpenseTransactions(business.incomeTransactions, "business", "LLC")],
     investments: [...personal.investments.map((x) => ({ ...x, accountName: `[Personal] ${x.accountName}` })), ...business.investments.map((x) => ({ ...x, accountName: `[LLC] ${x.accountName}` }))],
-    investmentValueSeries: [...personal.investmentValueSeries, ...business.investmentValueSeries],
+    investmentValueSeries: consolidatedInvestmentSeries,
     topBalances: [...personal.topBalances.map((x) => ({ ...x, accountName: `[Personal] ${x.accountName}`, fullPath: `personal:${x.fullPath}` })), ...business.topBalances.map((x) => ({ ...x, accountName: `[LLC] ${x.accountName}`, fullPath: `business:${x.fullPath}` }))],
     recentTransactions: [...personal.recentTransactions.map((x) => ({ ...x, accountName: `[Personal] ${x.accountName}` })), ...business.recentTransactions.map((x) => ({ ...x, accountName: `[LLC] ${x.accountName}` }))].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 50),
     upcomingBills: [...personal.upcomingBills, ...business.upcomingBills],
@@ -246,11 +331,24 @@ export function buildConsolidatedData(
     commodities: [...personal.commodities, ...business.commodities.filter((candidate) => !personal.commodities.some((existing) => existing.namespace === candidate.namespace && existing.mnemonic === candidate.mnemonic))],
     prices: [...personal.prices, ...business.prices.map((price) => ({ ...price, guid: `business:${price.guid}` }))],
     orphanedPriceGuids: [...personal.orphanedPriceGuids, ...business.orphanedPriceGuids.map((guid) => `business:${guid}`)],
-    hasClosingTransactions: personal.hasClosingTransactions || business.hasClosingTransactions,
-    monthlyCashInflowByCategory: joinCategories([personal.monthlyCashInflowByCategory, business.monthlyCashInflowByCategory]),
-    monthlyCashOutflowByCategory: joinCategories([personal.monthlyCashOutflowByCategory, business.monthlyCashOutflowByCategory]),
-    cashInflowCategoryColors: { ...personal.cashInflowCategoryColors, ...business.cashInflowCategoryColors },
-    cashOutflowCategoryColors: { ...personal.cashOutflowCategoryColors, ...business.cashOutflowCategoryColors },
+    hasClosingTransactions,
+    cashFlowSeriesExcludingClosing,
+    expenseBreakdownExcludingClosing: hasClosingTransactions ? [
+      ...prefixBreakdown(personal.expenseBreakdownExcludingClosing ?? personal.expenseBreakdown, "Personal"),
+      ...prefixBreakdown(business.expenseBreakdownExcludingClosing ?? business.expenseBreakdown, "LLC"),
+    ] : undefined,
+    monthlyExpensesByCategoryExcludingClosing: hasClosingTransactions ? [...closingCategoryRows("monthlyExpensesByCategoryExcludingClosing", "monthlyExpensesByCategory"), ...eliminationCategoryRows(verifiedEliminations, "expenses")] : undefined,
+    expenseCategoryColorsExcludingClosing: hasClosingTransactions ? { ...prefixCategoryColors(personal.expenseCategoryColorsExcludingClosing ?? personal.expenseCategoryColors, "Personal"), ...prefixCategoryColors(business.expenseCategoryColorsExcludingClosing ?? business.expenseCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" } : undefined,
+    monthlyIncomeByCategoryExcludingClosing: hasClosingTransactions ? [...closingCategoryRows("monthlyIncomeByCategoryExcludingClosing", "monthlyIncomeByCategory"), ...eliminationCategoryRows(verifiedEliminations, "income")] : undefined,
+    incomeCategoryColorsExcludingClosing: hasClosingTransactions ? { ...prefixCategoryColors(personal.incomeCategoryColorsExcludingClosing ?? personal.incomeCategoryColors, "Personal"), ...prefixCategoryColors(business.incomeCategoryColorsExcludingClosing ?? business.incomeCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" } : undefined,
+    monthlyCashInflowByCategory: [...categoryRows("monthlyCashInflowByCategory"), ...eliminationCategoryRows(verifiedEliminations, "income")],
+    monthlyCashOutflowByCategory: [...categoryRows("monthlyCashOutflowByCategory"), ...eliminationCategoryRows(verifiedEliminations, "expenses")],
+    cashInflowCategoryColors: { ...prefixCategoryColors(personal.cashInflowCategoryColors, "Personal"), ...prefixCategoryColors(business.cashInflowCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" },
+    cashOutflowCategoryColors: { ...prefixCategoryColors(personal.cashOutflowCategoryColors, "Personal"), ...prefixCategoryColors(business.cashOutflowCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" },
+    monthlyCashInflowByCategoryExcludingClosing: hasClosingTransactions ? [...closingCategoryRows("monthlyCashInflowByCategoryExcludingClosing", "monthlyCashInflowByCategory"), ...eliminationCategoryRows(verifiedEliminations, "income")] : undefined,
+    monthlyCashOutflowByCategoryExcludingClosing: hasClosingTransactions ? [...closingCategoryRows("monthlyCashOutflowByCategoryExcludingClosing", "monthlyCashOutflowByCategory"), ...eliminationCategoryRows(verifiedEliminations, "expenses")] : undefined,
+    cashInflowCategoryColorsExcludingClosing: hasClosingTransactions ? { ...prefixCategoryColors(personal.cashInflowCategoryColorsExcludingClosing ?? personal.cashInflowCategoryColors, "Personal"), ...prefixCategoryColors(business.cashInflowCategoryColorsExcludingClosing ?? business.cashInflowCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" } : undefined,
+    cashOutflowCategoryColorsExcludingClosing: hasClosingTransactions ? { ...prefixCategoryColors(personal.cashOutflowCategoryColorsExcludingClosing ?? personal.cashOutflowCategoryColors, "Personal"), ...prefixCategoryColors(business.cashOutflowCategoryColorsExcludingClosing ?? business.cashOutflowCategoryColors, "LLC"), "[Consolidation] Verified adjustments": "#6F767E" } : undefined,
   };
   data.savingsRate = data.currentMonthIncome === 0 ? 0 : ((data.currentMonthIncome - data.currentMonthExpenses) / data.currentMonthIncome) * 100;
   return {

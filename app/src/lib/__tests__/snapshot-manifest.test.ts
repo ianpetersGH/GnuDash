@@ -51,4 +51,49 @@ describe("snapshot manifest contract", () => {
     expect(result.bridge.unresolvedEliminations).toHaveLength(1);
     expect(result.bridge.publication).toBe("qualified");
   });
+
+  it("keeps consolidated identities, adjustments, closing variants, and investment history complete", () => {
+    const withEliminations = structuredClone(manifest);
+    withEliminations.consolidation.eliminations = [
+      { id: "income", metric: "income", amount: -5, currency: "USD", status: "verified", rationale: "synthetic paired income", effective_month: "2026-01" },
+      { id: "expense", metric: "expenses", amount: -3, currency: "USD", status: "verified", rationale: "synthetic paired expense", effective_month: "2026-01" },
+    ];
+    const base = generateDemoData();
+    const personal = {
+      ...base,
+      currency: "USD",
+      hasClosingTransactions: true,
+      cashFlowSeries: [{ month: "2026-01", income: 100, expenses: 40, net: 60 }],
+      cashFlowSeriesExcludingClosing: [{ month: "2026-01", income: 90, expenses: 30, net: 60 }],
+      monthlyIncomeByCategory: [{ month: "2026-01", category: "Sales", fullPath: "Sales", pathParts: ["Sales"], amount: 100 }],
+      monthlyExpensesByCategory: [{ month: "2026-01", category: "Travel", fullPath: "Travel", pathParts: ["Travel"], amount: 40 }],
+      monthlyCashInflowByCategory: [{ month: "2026-01", category: "Sales", fullPath: "Sales", pathParts: ["Sales"], amount: 100 }],
+      monthlyCashOutflowByCategory: [{ month: "2026-01", category: "Travel", fullPath: "Travel", pathParts: ["Travel"], amount: 40 }],
+      investmentValueSeries: [{ month: "2026-01", ticker: "FUND", value: 10, costBasis: 8 }],
+    };
+    const business = {
+      ...base,
+      currency: "USD",
+      hasClosingTransactions: false,
+      cashFlowSeries: [{ month: "2026-01", income: 50, expenses: 20, net: 30 }],
+      monthlyIncomeByCategory: [{ month: "2026-01", category: "Sales", fullPath: "Sales", pathParts: ["Sales"], amount: 50 }],
+      monthlyExpensesByCategory: [{ month: "2026-01", category: "Travel", fullPath: "Travel", pathParts: ["Travel"], amount: 20 }],
+      monthlyCashInflowByCategory: [{ month: "2026-01", category: "Sales", fullPath: "Sales", pathParts: ["Sales"], amount: 50 }],
+      monthlyCashOutflowByCategory: [{ month: "2026-01", category: "Travel", fullPath: "Travel", pathParts: ["Travel"], amount: 20 }],
+      investmentValueSeries: [{ month: "2026-02", ticker: "OTHER", value: 20, costBasis: 15 }],
+    };
+
+    const { data } = buildConsolidatedData(personal, business, withEliminations);
+    expect(data.cashFlowSeries).toEqual([{ month: "2026-01", income: 145, expenses: 57, net: 88 }]);
+    expect(data.cashFlowSeriesExcludingClosing).toEqual([{ month: "2026-01", income: 135, expenses: 47, net: 88 }]);
+    expect(data.monthlyIncomeByCategory.map((row) => row.category)).toEqual(expect.arrayContaining([
+      "[Personal] Sales", "[LLC] Sales", "[Consolidation] Verified adjustments",
+    ]));
+    expect(data.monthlyExpensesByCategory.map((row) => row.fullPath)).toEqual(expect.arrayContaining([
+      "personal:Travel", "business:Travel", "consolidation:verified-expenses-adjustments",
+    ]));
+    expect(data.monthlyIncomeByCategoryExcludingClosing).toBeDefined();
+    expect(data.investmentValueSeries.filter((row) => row.ticker === "FUND").map((row) => row.month)).toEqual(["2026-01", "2026-02"]);
+    expect(data.investmentValueSeries.find((row) => row.ticker === "FUND" && row.month === "2026-02")?.value).toBe(10);
+  });
 });
