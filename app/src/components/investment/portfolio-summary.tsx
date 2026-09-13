@@ -13,25 +13,38 @@ interface PortfolioSummaryProps {
 export function PortfolioSummary({ holdings, currency }: PortfolioSummaryProps) {
   const stats = useMemo(() => {
     const totalMarketValue = holdings.reduce((s, h) => s + h.marketValue, 0);
-    const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
-    const totalGainLoss = totalMarketValue - totalCostBasis;
+    const pricedHoldings = holdings.filter((h) => !h.valuationOnly);
+    const pricedMarketValue = pricedHoldings.reduce((s, h) => s + h.marketValue, 0);
+    const totalCostBasis = pricedHoldings.reduce((s, h) => s + h.costBasis, 0);
+    const totalGainLoss = pricedMarketValue - totalCostBasis;
     const totalReturnPct = totalCostBasis !== 0
       ? (totalGainLoss / Math.abs(totalCostBasis)) * 100
       : 0;
-    return { totalMarketValue, totalCostBasis, totalGainLoss, totalReturnPct };
+    return {
+      totalMarketValue,
+      totalCostBasis,
+      totalGainLoss,
+      totalReturnPct,
+      hasPricedHoldings: pricedHoldings.length > 0,
+    };
   }, [holdings]);
 
   const cards = [
-    { label: "Market Value", value: formatCurrency(stats.totalMarketValue, currency) },
-    { label: "Cost Basis", value: formatCurrency(stats.totalCostBasis, currency) },
+    { label: "Recorded Value", value: formatCurrency(stats.totalMarketValue, currency) },
+    {
+      label: "Known Cost Basis",
+      value: stats.hasPricedHoldings ? formatCurrency(stats.totalCostBasis, currency) : "Unavailable",
+    },
     {
       label: "Total Gain/Loss",
-      value: formatCurrency(stats.totalGainLoss, currency),
+      value: stats.hasPricedHoldings ? formatCurrency(stats.totalGainLoss, currency) : "Unavailable",
       color: stats.totalGainLoss >= 0 ? "#6C9B8B" : "#F87171",
     },
     {
       label: "Total Return",
-      value: `${stats.totalReturnPct >= 0 ? "+" : ""}${stats.totalReturnPct.toFixed(1)}%`,
+      value: stats.hasPricedHoldings
+        ? `${stats.totalReturnPct >= 0 ? "+" : ""}${stats.totalReturnPct.toFixed(1)}%`
+        : "Unavailable",
       color: stats.totalReturnPct >= 0 ? "#6C9B8B" : "#F87171",
     },
   ];

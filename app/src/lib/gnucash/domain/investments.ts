@@ -1,9 +1,25 @@
 import type { InvestmentHolding, MonthlyInvestmentValue } from "@/lib/types/gnucash";
 import type { ParseContext } from "../context";
+import { buildFullPath } from "../shared/accounts";
 import { parseGnuCashDate, sqlMonth } from "../shared/dates";
 
+function getBalanceValuedInvestmentGuids(ctx: ParseContext): Set<string> {
+  return new Set(
+    ctx.accounts
+      .filter((account) => {
+        if (account.account_type !== "ASSET" || account.placeholder !== 0) return false;
+        const path = buildFullPath(account, ctx.accountMap);
+        return path
+          .split(":")
+          .some((part) => part.trim().toLowerCase() === "investments");
+      })
+      .map((account) => account.guid)
+  );
+}
+
 /**
- * Compute current investment holdings for all STOCK and MUTUAL accounts.
+ * Compute current investment holdings for priced STOCK/MUTUAL accounts and
+ * balance-valued ASSET accounts kept below an "Investments" account.
  * Calculates cost basis (sum of buy-side split values), market value
  * (shares × latest price), gain/loss, and 12-month performance.
  * All monetary values are converted to base currency.
@@ -48,7 +64,7 @@ export function computeInvestments(ctx: ParseContext): InvestmentHolding[] {
     cost_basis: number;
   }[];
 
-  return holdings.map((h) => {
+  const pricedHoldings = holdings.map((h) => {
     const commodity = commodityMap.get(h.commodity_guid);
     const latestPrice = latestPrices.get(h.commodity_guid) ?? 0;
     const price12m = price12mMap.get(h.commodity_guid);
@@ -75,6 +91,50 @@ export function computeInvestments(ctx: ParseContext): InvestmentHolding[] {
       change12mPct,
     };
   });
+
+  // Some books track externally managed retirement, brokerage, crypto, and
+  // private-investment accounts as currency-valued ASSET balances rather than
+  // individual securities. Include those accounts without inventing shares,
+  // prices, cost basis, or returns.
+  const valuationAccountGuids = getBalanceValuedInvestmentGuids(ctx);
+  const valuationRows = db
+    .prepare(
+      `SELECT
+        a.guid AS account_guid,
+        a.name AS account_name,
+        a.commodity_guid,
+        SUM(CAST(s.quantity_num AS REAL) / s.quantity_denom) AS balance
+      FROM accounts a
+      LEFT JOIN splits s ON s.account_guid = a.guid
+      WHERE a.account_type = 'ASSET' AND a.placeholder = 0
+      GROUP BY a.guid`
+    )
+    .all() as {
+    account_guid: string;
+    account_name: string;
+    commodity_guid: string;
+    balance: number | null;
+  }[];
+
+  const balanceValuedHoldings: InvestmentHolding[] = valuationRows
+    .filter((row) => valuationAccountGuids.has(row.account_guid))
+    .map((row) => {
+      const marketValue = fxRates.toBase(row.commodity_guid, row.balance ?? 0);
+      return {
+        accountName: row.account_name,
+        ticker: row.account_name,
+        sharesHeld: 0,
+        costBasis: 0,
+        marketValue,
+        gainLoss: 0,
+        gainLossPct: 0,
+        change12m: null,
+        change12mPct: null,
+        valuationOnly: true,
+      };
+    });
+
+  return [...pricedHoldings, ...balanceValuedHoldings];
 }
 
 /**
@@ -117,6 +177,55 @@ export function computeInvestmentValueSeries(ctx: ParseContext): MonthlyInvestme
     }
   }
 
+  const valuationAccountGuids = getBalanceValuedInvestmentGuids(ctx);
+  const valuationSplits = db
+    .prepare(
+      `SELECT
+        a.guid AS account_guid,
+        a.name AS account_name,
+        a.commodity_guid,
+        ${sqlMonth("t.post_date")} AS month,
+        SUM(CAST(s.quantity_num AS REAL) / s.quantity_denom) AS balance_change
+      FROM splits s
+      JOIN accounts a ON s.account_guid = a.guid
+      JOIN transactions t ON s.tx_guid = t.guid
+      WHERE a.account_type = 'ASSET' AND a.placeholder = 0
+      GROUP BY a.guid, ${sqlMonth("t.post_date")}
+      ORDER BY t.post_date`
+    )
+    .all() as {
+    account_guid: string;
+    account_name: string;
+    commodity_guid: string;
+    month: string;
+    balance_change: number;
+  }[];
+
+  const valuationMonthly = new Map<
+    string,
+    {
+      accountName: string;
+      commodityGuid: string;
+      months: Map<string, number>;
+    }
+  >();
+  for (const split of valuationSplits) {
+    if (!valuationAccountGuids.has(split.account_guid)) continue;
+    let account = valuationMonthly.get(split.account_guid);
+    if (!account) {
+      account = {
+        accountName: split.account_name,
+        commodityGuid: split.commodity_guid,
+        months: new Map<string, number>(),
+      };
+      valuationMonthly.set(split.account_guid, account);
+    }
+    account.months.set(
+      split.month,
+      (account.months.get(split.month) ?? 0) + split.balance_change
+    );
+  }
+
   const allPrices = db
     .prepare(
       `SELECT commodity_guid, currency_guid, ${sqlMonth("date")} AS month, CAST(value_num AS REAL) / value_denom AS price
@@ -132,6 +241,7 @@ export function computeInvestmentValueSeries(ctx: ParseContext): MonthlyInvestme
 
   const allMonths = new Set<string>();
   for (const months of accountMonthly.values()) for (const m of months.keys()) allMonths.add(m);
+  for (const account of valuationMonthly.values()) for (const m of account.months.keys()) allMonths.add(m);
   for (const months of priceByMonth.values()) for (const m of months.keys()) allMonths.add(m);
   const sortedMonths = [...allMonths].sort();
 
@@ -174,6 +284,26 @@ export function computeInvestmentValueSeries(ctx: ParseContext): MonthlyInvestme
         ticker,
         value: valueInBase,
         costBasis: costInBase,
+      });
+    }
+  }
+
+  for (const account of valuationMonthly.values()) {
+    let cumulativeBalance = 0;
+    let started = false;
+    for (const month of sortedMonths) {
+      const delta = account.months.get(month);
+      if (delta !== undefined) {
+        cumulativeBalance += delta;
+        started = true;
+      }
+      if (!started) continue;
+      result.push({
+        month,
+        ticker: account.accountName,
+        value: fxRates.toBase(account.commodityGuid, cumulativeBalance),
+        costBasis: 0,
+        valuationOnly: true,
       });
     }
   }

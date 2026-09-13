@@ -19,6 +19,7 @@ export interface GroupedHolding {
   marketValue: number;
   gainLoss: number;
   gainLossPct: number;
+  valuationOnly: boolean;
 }
 
 function toUngrouped(holdings: InvestmentHolding[]): GroupedHolding[] {
@@ -32,11 +33,12 @@ function toUngrouped(holdings: InvestmentHolding[]): GroupedHolding[] {
     marketValue: h.marketValue,
     gainLoss: h.gainLoss,
     gainLossPct: h.gainLossPct,
+    valuationOnly: h.valuationOnly === true,
   }));
 }
 
 function toGrouped(holdings: InvestmentHolding[]): GroupedHolding[] {
-  const map = new Map<string, { accounts: string[]; shares: number; cost: number; market: number }>();
+  const map = new Map<string, { accounts: string[]; shares: number; cost: number; market: number; valuationOnly: boolean }>();
 
   for (const h of holdings) {
     const key = h.ticker || h.accountName;
@@ -46,12 +48,14 @@ function toGrouped(holdings: InvestmentHolding[]): GroupedHolding[] {
       existing.shares += h.sharesHeld;
       existing.cost += h.costBasis;
       existing.market += h.marketValue;
+      existing.valuationOnly = existing.valuationOnly && h.valuationOnly === true;
     } else {
       map.set(key, {
         accounts: [h.accountName],
         shares: h.sharesHeld,
         cost: h.costBasis,
         market: h.marketValue,
+        valuationOnly: h.valuationOnly === true,
       });
     }
   }
@@ -69,6 +73,7 @@ function toGrouped(holdings: InvestmentHolding[]): GroupedHolding[] {
       marketValue: g.market,
       gainLoss,
       gainLossPct,
+      valuationOnly: g.valuationOnly,
     };
   });
 }
@@ -118,6 +123,11 @@ export default function InvestmentPage() {
         </p>
       ) : (
         <>
+          {activeHoldings.some((holding) => holding.valuationOnly) && (
+            <div className="rounded-lg border border-[#D9E5E0] bg-[#F5F9F7] px-4 py-3 text-xs text-[#4F6F64]">
+              Balance-valued investment accounts use their recorded GnuCash balances. Cost basis and investment return remain unavailable unless securities and prices are recorded separately.
+            </div>
+          )}
           <PortfolioSummary holdings={activeHoldings} currency={c} />
 
           <ValueOverTimeChart
@@ -145,7 +155,9 @@ export default function InvestmentPage() {
           </div>
 
           {/* Price database */}
-          <PricesTable currency={c} selectedTicker={selectedTicker} />
+          {(data.prices.length > 0 || activeHoldings.some((holding) => !holding.valuationOnly)) && (
+            <PricesTable currency={c} selectedTicker={selectedTicker} />
+          )}
         </>
       )}
     </div>

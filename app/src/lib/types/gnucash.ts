@@ -233,6 +233,8 @@ export interface InvestmentHolding {
   change12m: number | null;
   /** 12-month change as a percentage, or null */
   change12mPct: number | null;
+  /** True when this account stores a currency-valued balance rather than priced shares. */
+  valuationOnly?: boolean;
 }
 
 /** Monthly snapshot of an investment's value. Used for the portfolio value-over-time chart. */
@@ -243,6 +245,8 @@ export interface MonthlyInvestmentValue {
   value: number;
   /** Cumulative cost basis at month end */
   costBasis: number;
+  /** True when value comes directly from the account balance and cost basis is unavailable. */
+  valuationOnly?: boolean;
 }
 
 /** A recent transaction from a BANK/CASH/ASSET/CREDIT/LIABILITY account. */
