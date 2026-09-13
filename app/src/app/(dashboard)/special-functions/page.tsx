@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
+import { useDashboard } from "@/lib/dashboard-context";
 import { Wand2, Layers, Target } from "lucide-react";
 
 /**
@@ -10,6 +11,23 @@ import { Wand2, Layers, Target } from "lucide-react";
  * main app shell. Bulk edit lives here until a better home emerges.
  */
 export default function SpecialFunctionsPage() {
+  const { snapshotMode } = useDashboard();
+  if (snapshotMode) {
+    return (
+      <div className="mx-auto max-w-4xl space-y-4">
+        <Card>
+          <CardContent className="space-y-3 p-6 text-sm text-[#6F767E]">
+            <h1 className="text-xl font-semibold text-[#1A1D1F]">Production snapshot mode</h1>
+            <p>Mutation tools are unavailable. GnuCash remains the sole ledger of record.</p>
+            <div className="flex gap-3">
+              <Link className="font-medium text-[#3B6B8A]" href="/cash-flow">Open read-only budgets and cash flow</Link>
+              <Link className="font-medium text-[#3B6B8A]" href="/reports">Open reporting controls</Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <header className="flex items-start gap-3">

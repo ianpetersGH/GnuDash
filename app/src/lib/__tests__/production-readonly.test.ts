@@ -27,4 +27,15 @@ describe("production snapshot safety gates", () => {
     expect(worker).toContain("function initFromReadOnlyBuffer");
     expect(worker).toContain("createWasmAdapter(db)");
   });
+
+  it("blocks direct navigation to mutation-oriented pages", () => {
+    const index = read("src/app/(dashboard)/special-functions/page.tsx");
+    const bulkEdit = read("src/app/(dashboard)/special-functions/bulk-edit/page.tsx");
+    const budgets = read("src/app/(dashboard)/special-functions/budgets/page.tsx");
+    const budgetEdit = read("src/app/(dashboard)/special-functions/budgets/edit/page.tsx");
+    expect(index).toContain("if (snapshotMode)");
+    expect(bulkEdit).toContain("disabled in production snapshot mode");
+    expect(budgets).toContain("disabled in production snapshot mode");
+    expect(budgetEdit).toContain("disabled in production snapshot mode");
+  });
 });

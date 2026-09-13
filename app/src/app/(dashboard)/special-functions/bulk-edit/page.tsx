@@ -113,7 +113,7 @@ function buildGroups(txs: LedgerTransaction[]): TransactionGroup[] {
 }
 
 export default function BulkEditPage() {
-  const { data, isWritable, bulkEditTransactions } = useDashboard();
+  const { data, isWritable, snapshotMode, bulkEditTransactions } = useDashboard();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [newDescription, setNewDescription] = useState("");
@@ -204,9 +204,9 @@ export default function BulkEditPage() {
         <BreadcrumbBar />
         <Card>
           <CardContent className="p-6 text-sm text-[#6F767E]">
-            Bulk edit requires the database to be open in editing mode. Click the
-            <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span>
-            button in the top bar to enable editing.
+            {snapshotMode
+              ? "Bulk edit is disabled in production snapshot mode. Submit corrections through the separately authenticated intent workflow."
+              : <>Bulk edit requires the database to be open in editing mode. Click the <span className="mx-1 font-medium text-[#3B6B8A]">Read-only</span> button in the top bar to enable editing.</>}
           </CardContent>
         </Card>
       </div>
