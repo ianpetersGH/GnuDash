@@ -12,13 +12,20 @@ function includesPath(path: string, terms: string[]): boolean {
   return terms.some((term) => normalized.includes(term));
 }
 
-function newestManualPriceAgeDays(prices: NonNullable<ReturnType<typeof useDashboard>["data"]>["prices"]): number | null {
-  const timestamps = prices
-    .filter((price) => price.source?.toLowerCase().includes("user"))
-    .map((price) => Date.parse(price.date))
-    .filter(Number.isFinite);
-  if (!timestamps.length) return null;
-  return Math.max(0, Math.floor((Date.now() - Math.max(...timestamps)) / 86_400_000));
+function priceTimestamp(value: string): number {
+  const compact = value.match(/^(\d{4})(\d{2})(\d{2})/);
+  if (compact) return Date.UTC(Number(compact[1]), Number(compact[2]) - 1, Number(compact[3]));
+  return Date.parse(value);
+}
+
+function oldestManualValuationAgeDays(prices: NonNullable<ReturnType<typeof useDashboard>["data"]>["prices"]): number | null {
+  const latestByCommodity = new Map<string, number>();
+  for (const price of prices.filter((row) => row.source?.toLowerCase().includes("user"))) {
+    const timestamp = priceTimestamp(price.date);
+    if (Number.isFinite(timestamp) && timestamp > (latestByCommodity.get(price.commodity_guid) ?? 0)) latestByCommodity.set(price.commodity_guid, timestamp);
+  }
+  if (!latestByCommodity.size) return null;
+  return Math.max(...[...latestByCommodity.values()].map((timestamp) => Math.max(0, Math.floor((Date.now() - timestamp) / 86_400_000))));
 }
 
 function QualityCard({ title, value, detail, unknown = false }: { title: string; value: number | string; detail: string; unknown?: boolean }) {
@@ -41,7 +48,7 @@ export default function ReportsPage() {
     const splits = data.ledgerTransactions.flatMap((tx) => tx.splits);
     const count = (terms: string[]) => splits.filter((split) => includesPath(split.accountFullPath, terms)).length;
     const ownerEvents = (dataByBook?.business.ledgerTransactions ?? []).filter((tx) => tx.splits.some((split) => includesPath(split.accountFullPath, ["owner", "member", "contribution", "draw", "due to", "due from", "reimbursement"])));
-    const manualAge = newestManualPriceAgeDays(data.prices);
+    const manualAge = oldestManualValuationAgeDays(data.prices);
     return {
       uncategorized: count(["uncategorized", "unassigned"]),
       transferReview: count(["transfer review"]),
